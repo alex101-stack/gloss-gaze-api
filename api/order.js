@@ -5,11 +5,61 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://namablog-anda.blogspot.com';
 
 // ─── Auth Google via Service Account ─────────────────────────────
-const getAuthClient = () => new google.auth.JWT({
-    email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-    scopes: ['https://www.googleapis.com/auth/spreadsheets']
-});
+// File: api/order.js
+
+const getAuthClient = () => {
+  try {
+    console.log('[DEBUG-1] === Mulai getAuthClient ===');
+    
+    // Step 1: Baca email
+    console.log('[DEBUG-2] Membaca GOOGLE_CLIENT_EMAIL...');
+    const email = process.env.GOOGLE_CLIENT_EMAIL;
+    console.log('[DEBUG-2] Email ada:', !!email);
+    if (email) {
+      console.log('[DEBUG-2] Email value:', email.substring(0, 10) + '...');
+    }
+    
+    // Step 2: Baca private key mentah
+    console.log('[DEBUG-3] Membaca GOOGLE_PRIVATE_KEY...');
+    const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
+    console.log('[DEBUG-3] Raw key ada:', !!rawKey);
+    console.log('[DEBUG-3] Raw key length:', rawKey.length);
+    console.log('[DEBUG-3] Raw key 50 char pertama:', rawKey.substring(0, 50));
+    
+    // Step 3: Proses key (ganti \n literal dengan newline asli)
+    console.log('[DEBUG-4] Memproses key (replace \\n)...');
+    const key = rawKey.replace(/\\n/g, '\n');
+    console.log('[DEBUG-4] Key length setelah proses:', key.length);
+    console.log('[DEBUG-4] Key mengandung '-----BEGIN':', key.includes('-----BEGIN'));
+    console.log('[DEBUG-4] Key mengandung '-----END':', key.includes('-----END'));
+    console.log('[DEBUG-4] Key mengandung newline asli:', key.includes('\n'));
+    
+    // Step 4: Buat konfigurasi
+    console.log('[DEBUG-5] Membuat config object...');
+    const config = {
+      email: email,
+      key: key,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+    };
+    console.log('[DEBUG-5] Config berhasil dibuat');
+    console.log('[DEBUG-5] Config keys:', Object.keys(config));
+    
+    // Step 5: Buat JWT client
+    console.log('[DEBUG-6] Memanggil new google.auth.JWT()...');
+    const client = new google.auth.JWT(config);
+    console.log('[DEBUG-6] JWT client BERHASIL dibuat!');
+    
+    return client;
+    
+  } catch (error) {
+    console.error('[DEBUG-ERROR] ========== ERROR DETAIL ==========');
+    console.error('[DEBUG-ERROR] Message:', error.message);
+    console.error('[DEBUG-ERROR] Name:', error.name);
+    console.error('[DEBUG-ERROR] Stack:', error.stack);
+    console.error('[DEBUG-ERROR] ===================================');
+    throw error;
+  }
+};
 
 // ─── Handler Utama ────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
