@@ -69,7 +69,65 @@ module.exports = async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+export default async function handler(req, res) {
+  console.log('[ROUTE] Request masuk:', req.method, req.url);
+  
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
+  try {
+    console.log('[ROUTE] Parsing body...');
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    console.log('[ROUTE] Body parsed:', !!body);
+    
+    console.log('[ROUTE] Memanggil getAuthClient...');
+    const auth = getAuthClient(); // <-- ERROR SEHARUSNYA DI SINI
+    console.log('[ROUTE] Auth client OK, melanjutkan...');
+    
+    // ... lanjutkan ke sheets API
+    const sheets = google.sheets({ version: 'v4', auth });
+    console.log('[ROUTE] Sheets client OK');
+    
+    // ... append data
+    console.log('[ROUTE] Siap append data...');
+    const response = await sheets.spreadsheets.values.append({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range: 'Orders!A:Z',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: [[
+          body.orderId,
+          body.customerName,
+          // ... fields lainnya
+        ]]
+      }
+    });
+    
+    console.log('[ROUTE] Data appended successfully');
+    return res.status(200).json({ success: true });
+    
+  } catch (error) {
+    console.error('[ROUTE-ERROR] ========== ROUTE ERROR ==========');
+    console.error('[ROUTE-ERROR] Message:', error.message);
+    console.error('[ROUTE-ERROR] Name:', error.name);
+    console.error('[ROUTE-ERROR] Code:', error.code);
+    
+    // Cek tipe error spesifik
+    if (error.message.includes('Invalid JSON')) {
+      console.error('[ROUTE-ERROR] TERKONFIRMASI: Invalid JSON error');
+      console.error('[ROUTE-ERROR] Ini terjadi sebelum Google Sheets API call');
+    }
+    
+    console.error('[ROUTE-ERROR] Full error:', error);
+    console.error('[ROUTE-ERROR] ===================================');
+    
+    return res.status(500).json({ 
+      error: 'Order API Error: ' + error.message,
+      debug: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+}
     try {
         const { order } = req.body;
 
