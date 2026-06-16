@@ -1,72 +1,66 @@
-import { google } from 'googleapis';
+const { google } = require('googleapis');
 
 // ─── Konfigurasi dari Environment Variables Vercel ───────────────
-const SPREADSHEET_ID  = process.env.SPREADSHEET_ID;   // ID Sheet penjualan
-const GOOGLE_CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
-const GOOGLE_PRIVATE_KEY  = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
-const ALLOWED_ORIGIN  = process.env.ALLOWED_ORIGIN    // URL Blogger Anda
-                     || 'https://namablog-anda.blogspot.com';
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://namablog-anda.blogspot.com';
 
 // ─── Auth Google via Service Account ─────────────────────────────
 const getAuthClient = () => new google.auth.JWT({
     email: process.env.GOOGLE_CLIENT_EMAIL,
-    key:   process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
 });
 
 // ─── Handler Utama ────────────────────────────────────────────────
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
 
-    // CORS — hanya izinkan dari domain Blogger Anda
     res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST')   return res.status(405).json({ error: 'Method not allowed' });
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     try {
         const { order } = req.body;
 
-        // Validasi minimal
-        if (!order || !order.orderNumber || !order.items?.length) {
+        if (!order || !order.orderNumber || !order.items || !order.items.length) {
             return res.status(400).json({ error: 'Data order tidak valid' });
         }
 
-        const auth   = getAuthClient();
+        const auth = getAuthClient();
         const sheets = google.sheets({ version: 'v4', auth });
-        const now    = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+        const now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
 
-        // Ambil alamat utama
         const alamat = order.address
             ? `${order.address.recipient} | ${order.address.phone} | ${order.address.detail}`
             : 'Alamat tidak tersedia';
 
-        // ── 1. Tulis ke sheet ORDERS (1 baris per order) ──────────
+        // 1. Tulis ke sheet ORDERS
         await sheets.spreadsheets.values.append({
             spreadsheetId: SPREADSHEET_ID,
             range: 'ORDERS!A:H',
             valueInputOption: 'USER_ENTERED',
             requestBody: {
                 values: [[
-                    now,                    // A: Timestamp
-                    order.orderNumber,      // B: Order Number
-                    'Baru',                 // C: Status
-                    order.buyerName || '-', // D: Nama pembeli
-                    order.buyerPhone || '-',// E: No. HP
-                    alamat,                 // F: Alamat lengkap
-                    order.paymentId.toUpperCase(), // G: Metode bayar
-                    order.total             // H: Total (angka)
+                    now,
+                    order.orderNumber,
+                    'Baru',
+                    order.buyerName || '-',
+                    order.buyerPhone || '-',
+                    alamat,
+                    (order.paymentId || '-').toUpperCase(),
+                    order.total
                 ]]
             }
         });
 
-        // ── 2. Tulis ke sheet ORDER_ITEMS (1 baris per item) ──────
+        // 2. Tulis ke sheet ORDER_ITEMS
         const itemRows = order.items.map(item => [
-            order.orderNumber,   // A: Order Number
-            item.id,             // B: Product ID
-            item.name,           // C: Nama produk
-            item.quantity,       // D: Jumlah
-            item.price * item.quantity // E: Subtotal
+            order.orderNumber,
+            item.id,
+            item.name,
+            item.quantity,
+            item.price * item.quantity
         ]);
 
         await sheets.spreadsheets.values.append({
@@ -76,22 +70,19 @@ export default async function handler(req, res) {
             requestBody: { values: itemRows }
         });
 
-        // ── 3. Kurangi stok di sheet STOK ─────────────────────────
-        // Baca semua data stok dulu
+        // 3. Kurangi stok di sheet STOK
         const stokRes = await sheets.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
             range: 'STOK!A:C'
         });
 
         const stokRows = stokRes.data.values || [];
-        // Buat map: productId → { rowIndex, stok }
         const stokMap = {};
         stokRows.forEach((row, idx) => {
-            if (idx === 0) return; // skip header
+            if (idx === 0) return;
             stokMap[String(row[0])] = { rowIndex: idx + 1, stok: Number(row[2]) };
         });
 
-        // Update stok per item yang dibeli
         const updateRequests = [];
         for (const item of order.items) {
             const entry = stokMap[String(item.id)];
@@ -114,7 +105,6 @@ export default async function handler(req, res) {
             });
         }
 
-        // ── 4. Kirim respons sukses ke Vue ─────────────────────────
         return res.status(200).json({
             success: true,
             orderNumber: order.orderNumber,
@@ -128,4 +118,4 @@ export default async function handler(req, res) {
             detail: err.message
         });
     }
-}
+};
