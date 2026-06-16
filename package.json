@@ -1,0 +1,8 @@
+{
+  "name": "gloss-gaze-api",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "dependencies": {
+    "googleapis": "^140.0.0"
+  }
+}
