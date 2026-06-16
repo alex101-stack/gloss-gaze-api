@@ -5,8 +5,6 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://namablog-anda.blogspot.com';
 
 // ─── Auth Google via Service Account ─────────────────────────────
-// File: api/order.js
-
 const getAuthClient = () => {
   try {
     console.log('[DEBUG-1] === Mulai getAuthClient ===');
@@ -30,8 +28,8 @@ const getAuthClient = () => {
     console.log('[DEBUG-4] Memproses key (replace \\n)...');
     const key = rawKey.replace(/\\n/g, '\n');
     console.log('[DEBUG-4] Key length setelah proses:', key.length);
-    console.log('[DEBUG-4] Key mengandung '-----BEGIN':', key.includes('-----BEGIN'));
-    console.log('[DEBUG-4] Key mengandung '-----END':', key.includes('-----END'));
+    console.log('[DEBUG-4] Key mengandung BEGIN:', key.includes('-----BEGIN'));
+    console.log('[DEBUG-4] Key mengandung END:', key.includes('-----END'));
     console.log('[DEBUG-4] Key mengandung newline asli:', key.includes('\n'));
     
     // Step 4: Buat konfigurasi
@@ -63,15 +61,19 @@ const getAuthClient = () => {
 
 // ─── Handler Utama ────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
-
-    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-export default async function handler(req, res) {
   console.log('[ROUTE] Request masuk:', req.method, req.url);
+
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  // Only allow POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -79,151 +81,127 @@ export default async function handler(req, res) {
   try {
     console.log('[ROUTE] Parsing body...');
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-    console.log('[ROUTE] Body parsed:', !!body);
+    console.log('[ROUTE] Body parsed successfully');
     
+    const { order } = body;
+
+    if (!order || !order.orderNumber || !order.items || !order.items.length) {
+      console.log('[ROUTE] Validasi gagal: Data order tidak valid');
+      return res.status(400).json({ error: 'Data order tidak valid' });
+    }
+
     console.log('[ROUTE] Memanggil getAuthClient...');
-    const auth = getAuthClient(); // <-- ERROR SEHARUSNYA DI SINI
-    console.log('[ROUTE] Auth client OK, melanjutkan...');
+    const auth = getAuthClient();
+    console.log('[ROUTE] Auth client OK, melanjutkan ke Google Sheets...');
     
-    // ... lanjutkan ke sheets API
     const sheets = google.sheets({ version: 'v4', auth });
-    console.log('[ROUTE] Sheets client OK');
-    
-    // ... append data
-    console.log('[ROUTE] Siap append data...');
-    const response = await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: 'Orders!A:Z',
+    const now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+
+    const alamat = order.address
+      ? `${order.address.recipient} | ${order.address.phone} | ${order.address.detail}`
+      : 'Alamat tidak tersedia';
+
+    // 1. Tulis ke sheet ORDERS
+    console.log('[ROUTE] Menulis ke sheet ORDERS...');
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'ORDERS!A:H',
       valueInputOption: 'USER_ENTERED',
       requestBody: {
         values: [[
-          body.orderId,
-          body.customerName,
-          // ... fields lainnya
+          now,
+          order.orderNumber,
+          'Baru',
+          order.buyerName || '-',
+          order.buyerPhone || '-',
+          alamat,
+          (order.paymentId || '-').toUpperCase(),
+          order.total
         ]]
       }
     });
-    
-    console.log('[ROUTE] Data appended successfully');
-    return res.status(200).json({ success: true });
-    
-  } catch (error) {
+    console.log('[ROUTE] Sheet ORDERS berhasil ditulis');
+
+    // 2. Tulis ke sheet ORDER_ITEMS
+    console.log('[ROUTE] Menulis ke sheet ORDER_ITEMS...');
+    const itemRows = order.items.map(item => [
+      order.orderNumber,
+      item.id,
+      item.name,
+      item.quantity,
+      item.price * item.quantity
+    ]);
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'ORDER_ITEMS!A:E',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: itemRows }
+    });
+    console.log('[ROUTE] Sheet ORDER_ITEMS berhasil ditulis');
+
+    // 3. Update stok di sheet STOK
+    console.log('[ROUTE] Mengupdate stok...');
+    const stokRes = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'STOK!A:C'
+    });
+
+    const stokRows = stokRes.data.values || [];
+    const stokMap = {};
+    stokRows.forEach((row, idx) => {
+      if (idx === 0) return; // Skip header
+      stokMap[String(row[0])] = { rowIndex: idx + 1, stok: Number(row[2]) };
+    });
+
+    const updateRequests = [];
+    for (const item of order.items) {
+      const entry = stokMap[String(item.id)];
+      if (entry) {
+        const stokBaru = Math.max(0, entry.stok - item.quantity);
+        updateRequests.push({
+          range: `STOK!C${entry.rowIndex}`,
+          values: [[stokBaru]]
+        });
+      }
+    }
+
+    if (updateRequests.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: {
+          valueInputOption: 'RAW',
+          data: updateRequests
+        }
+      });
+      console.log('[ROUTE] Stok berhasil diupdate');
+    }
+
+    console.log('[ROUTE] Semua proses selesai!');
+    return res.status(200).json({
+      success: true,
+      orderNumber: order.orderNumber,
+      message: 'Pesanan berhasil dicatat'
+    });
+
+  } catch (err) {
     console.error('[ROUTE-ERROR] ========== ROUTE ERROR ==========');
-    console.error('[ROUTE-ERROR] Message:', error.message);
-    console.error('[ROUTE-ERROR] Name:', error.name);
-    console.error('[ROUTE-ERROR] Code:', error.code);
+    console.error('[ROUTE-ERROR] Message:', err.message);
+    console.error('[ROUTE-ERROR] Name:', err.name);
+    console.error('[ROUTE-ERROR] Code:', err.code);
     
     // Cek tipe error spesifik
-    if (error.message.includes('Invalid JSON')) {
+    if (err.message.includes('Invalid JSON')) {
       console.error('[ROUTE-ERROR] TERKONFIRMASI: Invalid JSON error');
       console.error('[ROUTE-ERROR] Ini terjadi sebelum Google Sheets API call');
     }
     
-    console.error('[ROUTE-ERROR] Full error:', error);
+    console.error('[ROUTE-ERROR] Full error:', err);
     console.error('[ROUTE-ERROR] ===================================');
     
-    return res.status(500).json({ 
-      error: 'Order API Error: ' + error.message,
-      debug: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    return res.status(500).json({
+      error: 'Gagal memproses pesanan',
+      detail: err.message
     });
   }
-}
-    try {
-        const { order } = req.body;
-
-        if (!order || !order.orderNumber || !order.items || !order.items.length) {
-            return res.status(400).json({ error: 'Data order tidak valid' });
-        }
-
-        const auth = getAuthClient();
-        const sheets = google.sheets({ version: 'v4', auth });
-        const now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-
-        const alamat = order.address
-            ? `${order.address.recipient} | ${order.address.phone} | ${order.address.detail}`
-            : 'Alamat tidak tersedia';
-
-        // 1. Tulis ke sheet ORDERS
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'ORDERS!A:H',
-            valueInputOption: 'USER_ENTERED',
-            requestBody: {
-                values: [[
-                    now,
-                    order.orderNumber,
-                    'Baru',
-                    order.buyerName || '-',
-                    order.buyerPhone || '-',
-                    alamat,
-                    (order.paymentId || '-').toUpperCase(),
-                    order.total
-                ]]
-            }
-        });
-
-        // 2. Tulis ke sheet ORDER_ITEMS
-        const itemRows = order.items.map(item => [
-            order.orderNumber,
-            item.id,
-            item.name,
-            item.quantity,
-            item.price * item.quantity
-        ]);
-
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'ORDER_ITEMS!A:E',
-            valueInputOption: 'USER_ENTERED',
-            requestBody: { values: itemRows }
-        });
-
-        // 3. Kurangi stok di sheet STOK
-        const stokRes = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'STOK!A:C'
-        });
-
-        const stokRows = stokRes.data.values || [];
-        const stokMap = {};
-        stokRows.forEach((row, idx) => {
-            if (idx === 0) return;
-            stokMap[String(row[0])] = { rowIndex: idx + 1, stok: Number(row[2]) };
-        });
-
-        const updateRequests = [];
-        for (const item of order.items) {
-            const entry = stokMap[String(item.id)];
-            if (entry) {
-                const stokBaru = Math.max(0, entry.stok - item.quantity);
-                updateRequests.push({
-                    range: `STOK!C${entry.rowIndex}`,
-                    values: [[stokBaru]]
-                });
-            }
-        }
-
-        if (updateRequests.length > 0) {
-            await sheets.spreadsheets.values.batchUpdate({
-                spreadsheetId: SPREADSHEET_ID,
-                requestBody: {
-                    valueInputOption: 'RAW',
-                    data: updateRequests
-                }
-            });
-        }
-
-        return res.status(200).json({
-            success: true,
-            orderNumber: order.orderNumber,
-            message: 'Pesanan berhasil dicatat'
-        });
-
-    } catch (err) {
-        console.error('Order API Error:', err.message);
-        return res.status(500).json({
-            error: 'Gagal memproses pesanan',
-            detail: err.message
-        });
-    }
 };
