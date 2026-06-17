@@ -70,39 +70,52 @@ module.exports = async function handler(req, res) {
             requestBody: { values: itemRows }
         });
 
-        // 3. Kurangi stok di sheet STOK
+        // 3. Kurangi stok di sheet PRODUCTS (kolom H)
         const stokRes = await sheets.spreadsheets.values.get({
             spreadsheetId: SPREADSHEET_ID,
-            range: 'STOK!A:C'
+            range: 'PRODUCTS!A:H'
         });
 
         const stokRows = stokRes.data.values || [];
+        console.log('DEBUG - Total rows read from PRODUCTS:', stokRows.length);
+        console.log('DEBUG - Header row:', JSON.stringify(stokRows[0]));
+        console.log('DEBUG - First data row:', JSON.stringify(stokRows[1]));
+
         const stokMap = {};
         stokRows.forEach((row, idx) => {
-            if (idx === 0) return;
-            stokMap[String(row[0])] = { rowIndex: idx + 1, stok: Number(row[2]) };
+            if (idx === 0) return; // skip header
+            // PRODUCTS!A=id, H=stock (kolom ke-8, index 7)
+            stokMap[String(row[0])] = { rowIndex: idx + 1, stok: Number(row[7]) };
         });
+        console.log('DEBUG - stokMap keys:', JSON.stringify(Object.keys(stokMap)));
 
         const updateRequests = [];
         for (const item of order.items) {
+            console.log('DEBUG - Looking for item.id:', item.id, 'as string:', String(item.id));
             const entry = stokMap[String(item.id)];
+            console.log('DEBUG - Found entry:', JSON.stringify(entry));
             if (entry) {
                 const stokBaru = Math.max(0, entry.stok - item.quantity);
+                console.log('DEBUG - New stock will be:', stokBaru, 'at row', entry.rowIndex);
                 updateRequests.push({
-                    range: `STOK!C${entry.rowIndex}`,
+                    range: `PRODUCTS!H${entry.rowIndex}`,
                     values: [[stokBaru]]
                 });
+            } else {
+                console.log('DEBUG - NO MATCH for item.id:', item.id);
             }
         }
+        console.log('DEBUG - Total updateRequests:', updateRequests.length);
 
         if (updateRequests.length > 0) {
-            await sheets.spreadsheets.values.batchUpdate({
+            const batchResult = await sheets.spreadsheets.values.batchUpdate({
                 spreadsheetId: SPREADSHEET_ID,
                 requestBody: {
                     valueInputOption: 'RAW',
                     data: updateRequests
                 }
             });
+            console.log('DEBUG - batchUpdate result:', JSON.stringify(batchResult.data));
         }
 
         return res.status(200).json({
