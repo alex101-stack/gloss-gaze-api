@@ -1,8 +1,9 @@
 {
   "name": "gloss-gaze-api",
   "version": "1.0.0",
-  "type": "commonjs",
+  "private": true,
   "dependencies": {
-    "googleapis": "^140.0.0"
+    "googleapis": "^140.0.0",
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
